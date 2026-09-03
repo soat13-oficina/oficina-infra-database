@@ -1,0 +1,25 @@
+### Terraform ###
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+backend.hcl
+crash.log
+crash.*.log
+tfplan
+*.tfplan
+
+### Credenciais ###
+.env
+
+### Ferramentas / agentes ###
+/.agents/
+/.claude/
+/AGENTS.md
+/CLAUDE.md
+
+### OS / editores ###
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,212 @@
+name: Terraform (banco de dados)
+
+# Camada de dados: uma instancia RDS PostgreSQL por ambiente, isolada via
+# terraform workspace (hml e prd).
+#
+# Fluxo (deploy automatico das branches de homologacao e producao):
+#   PR                   -> fmt + validate + plan dos DOIS workspaces
+#   push desenvolvimento -> fmt + validate + plan dos DOIS workspaces
+#   push homologacao     -> apply no workspace hml
+#   push master          -> apply no workspace prd
+#   workflow_dispatch    -> plan | apply | destroy no ambiente escolhido
+#
+# PRE-REQUISITO: a plataforma (repo oficina-infra-k8s) precisa estar aplicada.
+# Este repositorio le vpc_id, database_subnet_group_name e
+# node_security_group_id do state dela via terraform_remote_state.
+#
+# Configuracao necessaria no repositorio:
+#   Secrets:   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+#   Variables: TF_STATE_BUCKET (a MESMA bucket usada pela plataforma)
+#              AWS_REGION (opcional, default us-east-1)
+
+on:
+  pull_request:
+  push:
+    branches: [master, homologacao, desenvolvimento]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Ambiente (workspace do Terraform)
+        type: choice
+        required: true
+        default: hml
+        options: [hml, prd]
+      action:
+        description: Acao do Terraform
+        type: choice
+        required: true
+        default: plan
+        options: [plan, apply, destroy]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  TF_VERSION: latest
+  # Alimenta var.state_bucket, usada pelo data.terraform_remote_state.platform.
+  TF_VAR_state_bucket: ${{ vars.TF_STATE_BUCKET }}
+
+jobs:
+  validate:
+    name: fmt + validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive -diff
+
+      - name: terraform validate
+        run: |
+          terraform init -backend=false
+          terraform validate -no-color
+
+  plan:
+    name: plan (${{ matrix.environment }})
+    needs: validate
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_name == 'desenvolvimento') || (github.event_name == 'workflow_dispatch' && inputs.action == 'plan')
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # No dispatch manual planeja so o ambiente escolhido; em PR/push,
+      # os dois - um PR para master mexe em producao e homologacao.
+      matrix:
+        environment: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', inputs.environment)) || fromJSON('["hml","prd"]') }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: terraform init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="region=$AWS_REGION"
+
+      - name: Seleciona o workspace ${{ matrix.environment }}
+        run: terraform workspace select -or-create "${{ matrix.environment }}"
+
+      - name: terraform plan
+        id: plan
+        run: |
+          terraform plan -no-color -input=false | tee plan.txt
+          {
+            echo 'stdout<<PLAN_EOF'
+            tail -c 40000 plan.txt
+            echo 'PLAN_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Comenta o plano no PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          PLAN: ${{ steps.plan.outputs.stdout }}
+          ENVIRONMENT: ${{ matrix.environment }}
+        with:
+          script: |
+            const env = process.env.ENVIRONMENT;
+            const marker = `<!-- terraform-plan-database-${env} -->`;
+            const body = `${marker}\n### Terraform plan — banco de dados (\`${env}\`)\n\n<details><summary>Ver plano</summary>\n\n\`\`\`terraform\n${process.env.PLAN}\n\`\`\`\n\n</details>`;
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo, issue_number: context.issue.number,
+            });
+            // Um comentario por ambiente, atualizado a cada push do PR.
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
+            }
+
+  apply:
+    name: apply (${{ (github.event_name == 'workflow_dispatch' && inputs.environment) || (github.ref_name == 'master' && 'prd') || 'hml' }})
+    needs: validate
+    if: (github.event_name == 'push' && (github.ref_name == 'master' || github.ref_name == 'homologacao')) || (github.event_name == 'workflow_dispatch' && inputs.action == 'apply')
+    runs-on: ubuntu-latest
+    environment: ${{ (github.event_name == 'workflow_dispatch' && inputs.environment) || (github.ref_name == 'master' && 'producao') || 'homologacao' }}
+    env:
+      # homologacao -> hml, master -> prd. Mapeamento unico, aqui.
+      TF_WORKSPACE_ENV: ${{ (github.event_name == 'workflow_dispatch' && inputs.environment) || (github.ref_name == 'master' && 'prd') || 'hml' }}
+    # Serializa applies por ambiente: dois pushes seguidos na mesma branch nao
+    # disputam o lock do state.
+    concurrency:
+      group: terraform-database-${{ (github.event_name == 'workflow_dispatch' && inputs.environment) || (github.ref_name == 'master' && 'prd') || 'hml' }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: terraform init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="region=$AWS_REGION"
+
+      - name: Seleciona o workspace $TF_WORKSPACE_ENV
+        run: terraform workspace select -or-create "$TF_WORKSPACE_ENV"
+
+      - name: terraform apply
+        timeout-minutes: 30
+        run: terraform apply -auto-approve -no-color -input=false
+
+      # Sem segredos: o output do secret e apenas o ARN, e a senha vive no
+      # Secrets Manager. A pipeline da aplicacao le de la no momento do deploy.
+      - name: Outputs do banco
+        run: terraform output -no-color
+
+  destroy:
+    name: destroy (${{ inputs.environment }})
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'destroy'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment == 'prd' && 'producao' || 'homologacao' }}
+    concurrency:
+      group: terraform-database-${{ inputs.environment }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: terraform init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="region=$AWS_REGION"
+
+      - name: Seleciona o workspace ${{ inputs.environment }}
+        run: terraform workspace select "${{ inputs.environment }}"
+
+      - name: terraform destroy
+        timeout-minutes: 30
+        run: terraform destroy -auto-approve -no-color -input=false

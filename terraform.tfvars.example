@@ -1,0 +1,6 @@
+# Copie para terraform.tfvars (gitignored) para uso local:
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# Na pipeline este valor vem de TF_VAR_state_bucket, alimentado pela variable
+# de repositorio TF_STATE_BUCKET.
+state_bucket = "SEU-BUCKET-DE-STATE-AQUI"

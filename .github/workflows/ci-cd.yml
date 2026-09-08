@@ -1,4 +1,4 @@
-name: Terraform (banco de dados)
+name: CI/CD (banco de dados)
 
 # Camada de dados: uma instancia RDS PostgreSQL por ambiente, isolada via
 # terraform workspace (hml e prd).
@@ -9,6 +9,9 @@ name: Terraform (banco de dados)
 #   push homologacao     -> apply no workspace hml
 #   push master          -> apply no workspace prd
 #   workflow_dispatch    -> plan | apply | destroy no ambiente escolhido
+#
+# Nomes de job seguem o padrao comum aos quatro repositorios do projeto:
+# validacao . plan . deploy . destroy.
 #
 # PRE-REQUISITO: a plataforma (repo oficina-infra-k8s) precisa estar aplicada.
 # Este repositorio le vpc_id, database_subnet_group_name e
@@ -49,8 +52,8 @@ env:
   TF_VAR_state_bucket: ${{ vars.TF_STATE_BUCKET }}
 
 jobs:
-  validate:
-    name: fmt + validate
+  validacao:
+    name: Validacao do Terraform (fmt + validate)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -68,8 +71,8 @@ jobs:
           terraform validate -no-color
 
   plan:
-    name: plan (${{ matrix.environment }})
-    needs: validate
+    name: terraform plan (${{ matrix.environment }})
+    needs: validacao
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_name == 'desenvolvimento') || (github.event_name == 'workflow_dispatch' && inputs.action == 'plan')
     runs-on: ubuntu-latest
     strategy:
@@ -132,9 +135,9 @@ jobs:
               await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
             }
 
-  apply:
-    name: apply (${{ (github.event_name == 'workflow_dispatch' && inputs.environment) || (github.ref_name == 'master' && 'prd') || 'hml' }})
-    needs: validate
+  deploy:
+    name: Deploy em ${{ (github.event_name == 'workflow_dispatch' && inputs.environment) || (github.ref_name == 'master' && 'prd') || 'hml' }}
+    needs: validacao
     if: (github.event_name == 'push' && (github.ref_name == 'master' || github.ref_name == 'homologacao')) || (github.event_name == 'workflow_dispatch' && inputs.action == 'apply')
     runs-on: ubuntu-latest
     environment: ${{ (github.event_name == 'workflow_dispatch' && inputs.environment) || (github.ref_name == 'master' && 'producao') || 'homologacao' }}
@@ -144,7 +147,7 @@ jobs:
     # Serializa applies por ambiente: dois pushes seguidos na mesma branch nao
     # disputam o lock do state.
     concurrency:
-      group: terraform-database-${{ (github.event_name == 'workflow_dispatch' && inputs.environment) || (github.ref_name == 'master' && 'prd') || 'hml' }}
+      group: oficina-infra-database-${{ (github.event_name == 'workflow_dispatch' && inputs.environment) || (github.ref_name == 'master' && 'prd') || 'hml' }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
@@ -178,12 +181,12 @@ jobs:
         run: terraform output -no-color
 
   destroy:
-    name: destroy (${{ inputs.environment }})
+    name: Destroy de ${{ inputs.environment }}
     if: github.event_name == 'workflow_dispatch' && inputs.action == 'destroy'
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment == 'prd' && 'producao' || 'homologacao' }}
     concurrency:
-      group: terraform-database-${{ inputs.environment }}
+      group: oficina-infra-database-${{ inputs.environment }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4

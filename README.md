@@ -67,7 +67,7 @@ backend S3 com *lockfile* · GitHub Actions.
 
 **Opção A — pela pipeline (recomendado):** merge em `homologacao` aplica o
 ambiente `hml`; merge em `master` aplica o `prd`. Para rodar sob demanda:
-**Actions** → *Terraform (banco de dados)* → *Run workflow* → escolha o
+**Actions** → *CI/CD (banco de dados)* → *Run workflow* → escolha o
 ambiente e a ação.
 
 **Opção B — local:**
@@ -113,7 +113,7 @@ e lê usuário/senha do ARN em `MasterUserSecret.SecretArn`. Portanto:
 
 ## CI/CD
 
-Workflow: [`.github/workflows/terraform.yml`](.github/workflows/terraform.yml)
+Workflow: [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)
 
 | Gatilho | O que roda |
 |---|---|
@@ -123,10 +123,34 @@ Workflow: [`.github/workflows/terraform.yml`](.github/workflows/terraform.yml)
 | **Push em `master`** | **`apply` automático no workspace `prd`** |
 | *Run workflow* manual | `plan`, `apply` ou `destroy` no ambiente escolhido |
 
-Cada ambiente tem seu próprio grupo de `concurrency`, então dois pushes seguidos
-na mesma branch nunca disputam o *lock* do state. Os jobs de `apply`/`destroy`
-usam GitHub **Environments** (`homologacao` / `producao`), o que permite exigir
+Jobs, no padrão de nomes comum aos quatro repositórios do projeto:
+
+| Job | O que faz |
+|---|---|
+| `validacao` | `terraform fmt -check` e `terraform validate` |
+| `plan` | `terraform plan` do workspace, comentado no PR |
+| `deploy` | `terraform apply` no workspace do ambiente |
+| `destroy` | `terraform destroy` no workspace do ambiente |
+
+Cada ambiente tem seu próprio grupo de `concurrency`
+(`oficina-infra-database-<ambiente>`), então dois pushes seguidos na mesma
+branch nunca disputam o *lock* do state. Os jobs de `deploy`/`destroy` usam
+GitHub **Environments** (`homologacao` / `producao`), o que permite exigir
 aprovação manual antes de produção sem tocar no YAML.
+
+### Workflow auxiliar — `Formatar Terraform`
+
+[`terraform-fmt.yml`](.github/workflows/terraform-fmt.yml), manual (*Run
+workflow*): roda `terraform fmt -recursive`, regrava o `.terraform.lock.hcl`
+com os hashes de Linux, macOS e Windows e commita o resultado **na branch em que
+foi disparado** — escolha a sua branch de trabalho, não `master` nem
+`homologacao` (protegidas, o push seria recusado).
+
+Existe porque o gate `fmt -check` reprova qualquer desalinhamento e nem todo
+mundo do time tem o Terraform instalado na máquina. Enquanto o
+`.terraform.lock.hcl` não estiver versionado, cada `terraform init` resolve as
+versões de provider do zero dentro das restrições de `versions.tf`; rode este
+workflow uma vez na sua branch para fixá-las.
 
 ### Configuração exigida no repositório
 
@@ -158,7 +182,7 @@ assim que este repositório lê os outputs da plataforma.
 Destrua **antes** da plataforma — este repositório depende dos outputs dela.
 
 ```bash
-# Actions -> Terraform (banco de dados) -> destroy, uma vez para hml e outra para prd
+# Actions -> CI/CD (banco de dados) -> destroy, uma vez para hml e outra para prd
 # ou, local:
 terraform workspace select hml && terraform destroy
 terraform workspace select prd && terraform destroy

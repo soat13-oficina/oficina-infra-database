@@ -49,10 +49,10 @@ resource "aws_db_instance" "main" {
   vpc_security_group_ids = [aws_security_group.rds.id]
   publicly_accessible    = false
 
-  multi_az                  = local.cfg.multi_az
-  backup_retention_period   = local.cfg.backup_retention_period
-  deletion_protection       = local.cfg.deletion_protection
-  skip_final_snapshot       = local.cfg.skip_final_snapshot
+  multi_az                = local.cfg.multi_az
+  backup_retention_period = local.cfg.backup_retention_period
+  deletion_protection     = local.cfg.deletion_protection
+  skip_final_snapshot     = local.cfg.skip_final_snapshot
   final_snapshot_identifier = (
     local.cfg.skip_final_snapshot
     ? null

@@ -198,4 +198,15 @@ terraform workspace select prd && terraform destroy
 ## Documentação
 
 - [ADR 0001 — Consumo do state da plataforma e isolamento por workspace](docs/adr/0001-consumo-do-state-da-plataforma.md)
-- Modelagem de dados, diagrama ER e justificativa do banco: repositório `oficina-app`
+- [Modelo de dados — diagrama ER, relacionamentos e ajustes](https://github.com/soat13-oficina/oficina-app/blob/master/docs/arquitetura/modelo-de-dados.md) — o schema que roda nestas instâncias
+- [RFC 0002 — Justificativa da escolha do banco de dados](https://github.com/soat13-oficina/oficina-app/blob/master/docs/rfc/0002-escolha-do-banco-de-dados.md)
+
+### API
+
+Este repositório **não expõe API** — provisiona apenas a camada de dados. O
+schema é versionado pelo Flyway dentro de `oficina-app`, e a documentação da API
+que consome estas instâncias fica lá:
+
+- **Swagger UI:** `http://<host-da-aplicacao>/swagger-ui/index.html`
+- **Contrato OpenAPI:** `http://<host-da-aplicacao>/v3/api-docs`
+- **Collection do Insomnia:** [`docs/collections/oficina-api.insomnia.json`](https://github.com/soat13-oficina/oficina-app/blob/master/docs/collections/oficina-api.insomnia.json) — gerada a partir do OpenAPI
